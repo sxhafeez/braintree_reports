@@ -1,0 +1,353 @@
+__author__ = 'sxhafeez'
+import csv
+import copy
+import numpy
+
+flagVerbosePrints = False;
+
+def fcsv (x): return csv.DictReader(open(x));
+
+def getIds(file, colstring='invoices.txn_id'):
+    ids = [];
+    ff = fcsv(file);
+    for rows in ff:
+        ids.append(rows[colstring]);
+    return ids;
+
+# Gets a list of entries in the top row apart from invoices.txn_id
+def getSumOfRows(file, id_key = 'invoices.txn_id'):
+    val = 0.0;
+    fees = [];
+    ff = fcsv(file); # The (typically fees) file
+    for row in ff:
+        val = 0.0;
+        for id in row:
+            if id == id_key:
+                continue; # Don't add this to the sum
+            val = val + float(row[id]);
+        fees.append(val);
+    return fees;
+
+# Gets the sum of elements specified
+def getSumOfRowKeys(file, keys2sum):
+    val = 0.0;
+    rowsums = [];
+    ff = fcsv(file); # The passed csv file
+    for row in ff:
+        val = 0.0;
+        for id in row:
+            for kk in keys2sum:
+                if id == kk:
+                    # The field is sometimes empty...
+                    if row[id] != '':
+                        val = val + float(row[id]);
+        rowsums.append(val);
+    return rowsums;
+
+# Function to test float
+def isfloat(value):
+  try:
+    float(value)
+    return True
+  except ValueError:
+    return False
+
+def getColKeys(file):
+    colnames = [];
+    ff = fcsv(file); # The passed csv file
+    for row in ff:
+        for id in row:
+            colnames.append(id);
+        break;
+    return colnames;
+
+# Gets the sum of elements specified, column wise
+def getSumOfColKeys(file, keys2use=[]):
+    colsum = [];
+    colnames = [];
+    if len(keys2use)>0:
+        colnames = keys2use;
+        for i in range(0,len(keys2use)):
+            colsum.append(0);
+    else:
+        colnames = getColKeys(file);
+
+    #Now Colnames has the names, and colsum has the sums...
+    ff = fcsv(file); # The passed csv file
+    for row in ff:
+        idx = 0;
+        for id in colnames:
+            for kk in row:
+                if id == kk:
+                    # The field is sometimes empty...
+                    if row[kk] != '' and isfloat(row[kk]):
+                        colsum[idx] = colsum[idx] + float(row[kk]);
+            idx = idx+1;
+    return colsum;
+
+# Finds ids with the given key's col being nonzero. By default returns the voids...
+def getVoidIds(fv, key='1'):
+    vids = [];
+    ff = fcsv(fv);
+    for row in ff:
+        if row[key] == '0.0':
+            vids.append(row['invoices.txn_id']);
+    return vids;
+
+# Find the differences between sums in two files (match the ids while comparing the sums).
+# IDs of returned values match Ids A
+def getSumDiffs(idsA,sumsA,idsB,sumsB):
+    i=0;
+    # Normal copy is alias change, deep copy creates a literal copy
+    sdiff = copy.deepcopy(sumsA);
+    if flagVerbosePrints:
+        print(sumsA);
+    for row in idsA:
+        j = 0;
+        for rowb in idsB:
+            if row == rowb:
+                if flagVerbosePrints:
+                    print('Ids : '+row +', '+rowb);
+                break;
+            j = j+1;
+        # Check to see if j has overflowed (this can happen when idsB has some ids that don't exist in idsA)
+        if j<len(sumsB):
+            sdiff[i] = sumsA[i] - sumsB[j];
+        else:
+            sdiff[i] = float('nan');
+        if flagVerbosePrints:
+            print('TId: '+row+', '+rowb+'. Sums a: '+str(sumsA[i])+'. Sums b: '+str(sumsB[j]) + '. Diff: ' + str(sdiff[i]) );
+        i = i+1;
+    return sdiff;
+
+# Given {idsA} and {idsB,valB}, this function returns:
+# val : {idsB-idsA}
+# Run it twice to get a pruned list of vals and ids like this:
+# goodIds = removeVoids(vids,ids,ids);
+# goodVals = removeVoids(vids,ids,vals);
+def setDiff(idsA,idsB,valB):
+    goodVals = [];
+    i=0;
+    for id in idsB:
+        isGood = 1;
+        for v in idsA:
+            if v == id:
+                isGood = 0;
+                break;
+        if isGood == 1:
+            goodVals.append(valB[i]);
+        i = i+1;
+    return goodVals;
+
+# Compare two CSV files, calculate the difference between two or more fields, and print the transaction ID
+# and the difference in the amounts
+def checkTotal(fileA, fileB):
+    # DiffList has Ids from list A
+    diffList = getSumDiffs(getIds(fileA), getSumOfRows(fileA), getIds(fileB), getSumOfRows(fileB));
+    # Convey list to numbers so I can round to 2 decimals
+    diffList = numpy.around(numpy.array(diffList), decimals=2).tolist();
+
+    # This function calculates the difference between ids A and ids B.
+    #  if the difference is not zero, it returns the transaction id.
+    idsNonZero = setDiff([0.0], diffList, getIds(fileA));
+    # returns the difference in amount
+    diffListNonZero = numpy.around(setDiff([0.0],diffList,diffList),decimals=2);
+    i=0;
+    for id in idsNonZero:
+        print(id + ', ' + str(diffListNonZero[i]));
+        i=i+1;
+
+# *************************************
+#     STAGE 0 : Set up file names
+#
+# Relationships that should hold:
+# Using "sum(x)" implies a variable number of numeric fields in entry "x"
+#
+# First check:
+# Row : invoices['sum'] = sum(fees)
+#
+# Then compute:
+# Row : Discount = invoices['sum'] - sum(credits) - voids['1']
+# Row : voids['1'] = bt['sale']['Amount Authorized'] + bt['sale']['Service Fee']
+# Row : refunds['sum'] = bt['credit']['Amount Authorized']
+# *************************************
+numpy.set_printoptions(threshold='nan')
+# TODO : Set me to the processing date... (Or get from command line)
+dd = '2014-12-31';
+
+# Get all the csv files..
+fc =  dd+'-credits.csv';
+ff =  dd+'-fees.csv';
+fi =  dd+'-invoices.csv';
+fr =  dd+'-refunds.csv';
+fv =  dd+'-voids.csv';
+
+# *************************************
+#     STAGE 1 : Process Th Ids
+# *************************************
+fi_ids = getIds(fi);
+fr_ids = getIds(fr);
+fv_ids = getVoidIds(fv); # These are only the void ones...
+
+# ---------------------------------
+# Row : invoices['sum'] = sum(fees)
+print('\n\nCheck me! I am not zero! : invoices[\'sum\'] = sum(fees)');
+checkTotal(fi,ff);
+
+# ---------------------------------
+# Row : Discount = invoices['sum'] - sum(credits) - voids['1']
+sd = getSumDiffs(fi_ids, getSumOfRows(fi), getIds(fc),getSumOfRows(fc));
+sd2 = getSumDiffs(fi_ids, sd, getIds(fv), getSumOfRows(fv));
+# Remove void ids (just a double-check). Invoices only has valid ids => this is superfluous..
+idsNonVoid = setDiff(fv_ids, fi_ids, fi_ids);
+discountNonVoid = setDiff(fv_ids, fi_ids, sd2);
+discountNonVoid = numpy.around(numpy.array(discountNonVoid), decimals=2).tolist();
+
+idsNonVoidNonZero = setDiff([0.0], discountNonVoid, idsNonVoid);
+discountNonVoidNonZero = numpy.around(setDiff([0.0],discountNonVoid,discountNonVoid),decimals=2);
+
+print('\n\nCheck me! I am not zero! Discount = invoices[\'sum\'] - sum(credits) - voids[\'1\']');
+i=0;
+for id in idsNonVoidNonZero:
+    print(id + ', ' + str(discountNonVoidNonZero[i]));
+    i=i+1;
+if flagVerbosePrints:
+    print('\n\nAll discounts:');
+    print(sd2);
+
+
+# *******************************************
+#  STAGE 2 : Compare Th Invoice and Bt Sale
+# *******************************************
+# Now let's move to the Braintree file...
+fb = dd+'-bt.csv';
+fb_ids = getIds(fb, 'Transaction ID');
+fb_type = getIds(fb, 'Transaction Type');
+
+# Now split up the braintree ids into credit and sales...
+fb_idsSale = setDiff(['credit'],fb_type,fb_ids);
+
+# Th Invoice <==> Bt Sale
+thInvoiceXtra = setDiff(fb_idsSale, fi_ids, fi_ids);
+btSaleXtra = setDiff(fi_ids, fb_idsSale, fb_idsSale);
+
+print('\n\nThe extra ids in the th invoices file are: ')
+print thInvoiceXtra
+print('\n\nThe extra ids in the bt file (sale part) are: ')
+print btSaleXtra
+
+# *******************************************
+#  STAGE 3 : Compare Th Refund and Bt Credit
+# *******************************************
+fb_idsRefunded = getIds(fb, 'Refunded Transaction ID');
+fb_idsCredit = setDiff(['sale'],fb_type,fb_idsRefunded);
+
+# Th Refund <==> Bt Credit
+thRefundXtra = setDiff(fb_idsCredit, fr_ids, fr_ids);
+btCreditXtra = setDiff(fr_ids, fb_idsCredit, fb_idsCredit);
+
+print('\n\nThe extra ids in the th refund file are: ')
+print thRefundXtra
+print('\n\nThe extra ids in the bt file (credit part) are: ')
+print btCreditXtra
+
+# Checkpoint... What do we have by now...
+# 1. We have matched the total Th invoices with the individual fees
+# 2. We have determined voided transactions
+# 3. We have determined the discount
+# 4. We have determined if there are any extra sale transactions in TH or BT.
+# 5. We have determined if there are any extra refund transactions in TH or BT.
+
+# **************************************************
+#  STAGE 4 : Check Th Sale totals and Bt Sale Totals
+# **************************************************
+# Sum up the braintree fields.. (ids match the original fb_ids)..
+fb_sum = getSumOfRowKeys(fb, ['Amount Authorized', 'Service Fee']);
+fb_idsSumSale = setDiff(['credit'], fb_type, fb_ids);
+fb_sumSale = setDiff(['credit'], fb_type, fb_sum);
+
+# Row : voids['1'] = bt['sale']['Amount Authorized'] + bt['sale']['Service Fee']
+fv_allIds = getIds(fv);
+fv_allVals = getSumOfRows(fv);
+fv_allIdsNonVoid = setDiff(fv_ids, fv_allIds, fv_allIds);
+fv_allValsNonVoid = setDiff(fv_ids, fv_allIds, fv_allVals);
+
+voids1Minusbt = getSumDiffs(fv_allIdsNonVoid,fv_allValsNonVoid, fb_idsSumSale, fb_sumSale);
+voids1Minusbt = numpy.around(numpy.array(voids1Minusbt), decimals=2).tolist();
+
+fv_allIdsNonVoidNonZero = setDiff([0.0], voids1Minusbt, fv_allIdsNonVoid);
+voids1MinusbtNonZero = numpy.around(setDiff([0.0],voids1Minusbt,voids1Minusbt),decimals=2);
+
+print('\n\nCheck me! I am not zero! voids[\'1\'] = bt[\'sale\'][\'Amount Authorized\'] + bt[\'sale\'][\'Service Fee\']');
+i=0;
+for id in fv_allIdsNonVoidNonZero:
+    print(id + ', ' + str(voids1MinusbtNonZero[i]));
+    i=i+1;
+
+# *******************************************************
+#  STAGE 5 : Check Th Refunds totals and Bt Credit Totals
+# *******************************************************
+# Row : refunds['sum'] = bt['credit']['Amount Authorized']
+# Sum up the braintree fields.. (ids match the original fb_ids)..
+fb_sum = getSumOfRowKeys(fb, ['Amount Authorized']);
+fb_idsSumCredit = setDiff(['sale'], fb_type, fb_idsRefunded);
+fb_sumCredit = setDiff(['sale'], fb_type, fb_sum);
+# fb_sumCredit is a negative number in the bt spreadsheet. So we have to negate it.
+fb_sumCredit = (numpy.array(fb_sumCredit) * -1).tolist();
+
+fr_allIds = getIds(fr);
+fr_allVals = getSumOfRows(fr);
+
+rSumMinusBtCredit = getSumDiffs(fr_allIds,fr_allVals, fb_idsSumCredit, fb_sumCredit);
+rSumMinusBtCredit = numpy.around(numpy.array(rSumMinusBtCredit), decimals=2).tolist();
+
+fr_allIdsNonZero = setDiff([0.0], rSumMinusBtCredit, fr_allIds);
+rSumMinusBtCreditNonZero = numpy.around(setDiff([0.0],rSumMinusBtCredit,rSumMinusBtCredit),decimals=2);
+
+print('\n\nCheck me! I am not zero! refunds[\'sum\'] = bt[\'credit\'][\'Amount Authorized\']');
+i=0;
+for id in fr_allIdsNonZero:
+    print(id + ', ' + str(rSumMinusBtCreditNonZero[i]));
+    i=i+1;
+
+# *******************************************************
+#  STAGE 6 : Totals from Tophatter
+# *******************************************************
+print('\n\nSum of Tophatter Invoices\n\n')
+
+cols =['sum'];
+#cols = getColKeys(fi);
+csum = getSumOfColKeys(fi,cols);
+print('\n===========\n File : Invoices\n===========');
+for i in range(0,len(cols)):
+    print(cols[i] + ', ' + str(csum[i]));
+
+#cols = getColKeys(ff);
+cols =['0BuyerFee','0GiftCardFee','0ShippingFee','1BuyerFee','1DisputeRefundFee','CreditRepaymentFee','1PostageFee','1PostageInsuranceFee','1PostageUpgradeFee',
+       'PostageSignatureFee','1ProcessingFee','1RefundFee','1SchedulingFee','1SellerFee','1ShippingFee','1UnschedulingFee'];
+csum = getSumOfColKeys(ff,cols);
+print('\n===========\n File : Fees\n===========');
+for i in range(0,len(cols)):
+    print(cols[i] + ', ' + str(csum[i]));
+
+cols =['BuyerInvoice','GiftCardInvoice','SellerInvoice'];
+#cols = getColKeys(fc);
+csum = getSumOfColKeys(fc,cols);
+print('\n===========\n File : Credits\n===========');
+for i in range(0,len(cols)):
+    print(cols[i] + ', ' + str(csum[i]));
+
+cols =['sum'];
+#cols = getColKeys(fc);
+csum = getSumOfColKeys(fr,cols);
+print('\n===========\n File : Refunds\n===========');
+for i in range(0,len(cols)):
+    print(cols[i] + ', ' + str(csum[i]));
+
+
+print('\n===========\n File : Braintree\n===========');
+print('Sum Sale, ' + str(numpy.around(numpy.sum(numpy.array(fb_sumSale)),decimals=2).tolist()) );
+print('Sum Credit, ' + str(numpy.around(numpy.sum(numpy.array(fb_sumCredit)),decimals=2).tolist()) );
+
+print('\n\nEnding.. Sad to see you go... :-(..\n\n');
+
